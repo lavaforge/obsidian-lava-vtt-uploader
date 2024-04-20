@@ -8,25 +8,29 @@ import {
     TFile,
 } from 'obsidian';
 import { promises as fs } from 'fs';
-import { hashBuffer } from 'shared';
+import { createHash } from 'crypto';
 
 interface LavaVttPluginSettings {
     serverAddress: string;
-    serverPort: number;
 }
 
 const DEFAULT_SETTINGS: LavaVttPluginSettings = {
-    serverAddress: 'localhost',
-    serverPort: 3000,
+    serverAddress: 'http://localhost:3000',
 };
 
 export default class LavaVttPlugin extends Plugin {
-    settings: LavaVttPluginSettings;
-    private apiVersion: string | undefined = undefined;
-    baseUrl: String;
+    private settings: LavaVttPluginSettings;
+
+    private get apiBaseUrl() {
+        return `${this.settings.serverAddress}/api/`;
+    }
+
+    public get serverAddress() {
+        return this.settings.serverAddress;
+    }
 
     async onload() {
-        await this.initBaseUrl();
+        await this.loadSettings();
 
         this.registerDomEvent(document, 'contextmenu', (event: MouseEvent) => {
             const target = event.target as HTMLElement;
@@ -43,24 +47,9 @@ export default class LavaVttPlugin extends Plugin {
 
             const menu = new Menu();
             menu.addItem((item) => {
-                item.setTitle(`Open ${adapter.getFullPath(file.path)}`).onClick(
-                    async () => {
-                        if (this.apiVersion === undefined) {
-                            // fetch from /api/version. if route is not found, use version v0
-                            await this.fetchApiVersion();
-                        }
-
-                        if (this.apiVersion === 'v0') {
-                            await this.postImageV0(adapter, file);
-                        } else if (this.apiVersion === 'v1') {
-                            await this.postImageV1(adapter, file);
-                        } else {
-                            throw new Error(
-                                'Unknown API version, please update this plugin!',
-                            );
-                        }
-                    },
-                );
+                item.setTitle(`Display in Lava VTT`).onClick(async () => {
+                    await this.postImage(adapter, file);
+                });
             });
 
             menu.showAtPosition({ x: event.pageX, y: event.pageY });
@@ -69,41 +58,29 @@ export default class LavaVttPlugin extends Plugin {
         this.addSettingTab(new LavaVttSettingTab(this.app, this));
     }
 
-    public async initBaseUrl() {
-        await this.loadSettings();
-        this.baseUrl =
-            'http://' +
-            this.settings.serverAddress +
-            ':' +
-            this.settings.serverPort +
-            '/api/';
-    }
-
-    private async postImageV1(adapter: FileSystemAdapter, file: TFile) {
+    private async postImage(adapter: FileSystemAdapter, file: TFile) {
         const fileContent = await fs.readFile(adapter.getFullPath(file.path));
 
         const hash = hashBuffer(fileContent);
-        console.log('other hash', hash);
 
-        const headResponse = await fetch(`${this.baseUrl}image/${hash}`, {
-            method: 'HEAD',
-        });
+        const imageExistsCheck = await fetch(
+            `${this.apiBaseUrl}image/${hash}`,
+            {
+                method: 'HEAD',
+            },
+        );
 
-        if (headResponse.status !== 200) {
-            console.log('uploading new image');
-            await fetch(`${this.baseUrl}image`, {
+        if (imageExistsCheck.status !== 200) {
+            await fetch(`${this.apiBaseUrl}image`, {
                 method: 'POST',
-                body: fileContent, // Send the file content as the body
-                headers: {
-                    // Set appropriate headers if needed (e.g., for file type)
-                    'Content-Type': 'application/octet-stream',
-                },
+                body: fileContent,
+                headers: { 'Content-Type': 'application/octet-stream' },
             });
         } else {
-            console.log('image already exists, no upload necessary');
+            // image already exists, no upload necessary
         }
 
-        await fetch(`${this.baseUrl}display`, {
+        await fetch(`${this.apiBaseUrl}display`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -112,40 +89,17 @@ export default class LavaVttPlugin extends Plugin {
         });
     }
 
-    private async postImageV0(adapter: FileSystemAdapter, file: TFile) {
-        await fetch(`${this.baseUrl}new-image`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ path: adapter.getFullPath(file.path) }),
-        });
-    }
-
-    private async fetchApiVersion() {
-        await fetch(`${this.baseUrl}version`)
-            .then((res) => res.json())
-            .then((data) => {
-                this.apiVersion = data.version;
-                console.log('API VERSION', this.apiVersion);
-            })
-            .catch(() => {
-                this.apiVersion = 'v0';
-                console.log('API VERSION', this.apiVersion);
-            });
-    }
-
     onunload() {}
 
     async loadSettings() {
-        this.settings = Object.assign(
-            {},
-            DEFAULT_SETTINGS,
-            await this.loadData(),
-        );
+        this.settings = {
+            ...DEFAULT_SETTINGS,
+            ...(await this.loadData()),
+        };
     }
 
-    async saveSettings() {
+    async saveSettings(data: LavaVttPluginSettings) {
+        this.settings = data;
         await this.saveData(this.settings);
     }
 }
@@ -163,35 +117,22 @@ class LavaVttSettingTab extends PluginSettingTab {
 
         containerEl.empty();
 
-        const heading = containerEl.createEl('h3');
-        heading.textContent = 'General Settings';
-
         new Setting(containerEl)
             .setName('Server address')
             .setDesc('The address of the lava-vtt server')
             .addText((text) =>
                 text
-                    .setPlaceholder('Enter your server address')
-                    .setValue(this.plugin.settings.serverAddress)
+                    .setPlaceholder('e.g. http://localhost:3000')
+                    .setValue(this.plugin.serverAddress)
                     .onChange(async (value) => {
-                        this.plugin.settings.serverAddress = value;
-                        await this.plugin.saveSettings();
-                        await this.plugin.initBaseUrl();
-                    }),
-            );
-
-        new Setting(containerEl)
-            .setName('Server port')
-            .setDesc('The port of the lava-vtt server')
-            .addText((text) =>
-                text
-                    .setPlaceholder('Enter your server port')
-                    .setValue(String(this.plugin.settings.serverPort))
-                    .onChange(async (value) => {
-                        this.plugin.settings.serverPort = Number(value); // TODO: validate server port (int + 0-65... range)
-                        await this.plugin.saveSettings();
-                        await this.plugin.initBaseUrl();
+                        await this.plugin.saveSettings({
+                            serverAddress: value,
+                        });
                     }),
             );
     }
+}
+
+function hashBuffer(buffer: Buffer): string {
+    return createHash('sha1').update(buffer).digest('hex');
 }
