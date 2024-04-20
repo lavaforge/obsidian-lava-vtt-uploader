@@ -1,5 +1,5 @@
 {
-    "name": "obsidian-lava-vtt-adapter",
+    "name": "obsidian-lava-vtt-uploader",
     "version": "1.0.0",
     "description": "Send maps and images from Obsidian to Lava VTT",
     "main": "main.js",
