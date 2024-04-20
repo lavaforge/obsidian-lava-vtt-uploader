@@ -6,6 +6,7 @@ import {
     Plugin,
     PluginSettingTab,
     TFile,
+    Notice,
 } from 'obsidian';
 import { promises as fs } from 'fs';
 import { createHash } from 'crypto';
@@ -63,21 +64,25 @@ export default class LavaVttPlugin extends Plugin {
 
         const hash = hashBuffer(fileContent);
 
-        const imageExistsCheck = await fetch(
-            `${this.apiBaseUrl}image/${hash}`,
-            {
+        let imageExistsCheck: Response;
+        try {
+            imageExistsCheck = await fetch(`${this.apiBaseUrl}image/${hash}`, {
                 method: 'HEAD',
-            },
-        );
+            });
+        } catch (e) {
+            new Notice('The configured Lava VTT server is not reachable.');
+            throw e;
+        }
 
         if (imageExistsCheck.status !== 200) {
             await fetch(`${this.apiBaseUrl}image`, {
                 method: 'POST',
                 body: fileContent,
                 headers: { 'Content-Type': 'application/octet-stream' },
+            }).catch((e) => {
+                new Notice('Failed to upload image to Lava VTT.');
+                throw e;
             });
-        } else {
-            // image already exists, no upload necessary
         }
 
         await fetch(`${this.apiBaseUrl}display`, {
@@ -86,6 +91,9 @@ export default class LavaVttPlugin extends Plugin {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({ hash }),
+        }).catch((e) => {
+            new Notice('Failed to display image in Lava VTT.');
+            throw e;
         });
     }
 
